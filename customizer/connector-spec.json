@@ -1,0 +1,4 @@
+{
+    "name": "Copilot tool resource customizer",
+    "commands": ["std:machine-identity:list", "std:agent:list", "std:resource:list"]
+}
