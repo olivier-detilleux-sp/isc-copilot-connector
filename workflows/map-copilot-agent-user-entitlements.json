@@ -1,0 +1,230 @@
+{
+  "id": "b5a61d8a-2206-42a2-a6d3-8cfdc504c9dd",
+  "name": "Map Copilot Agent User Entitlements",
+  "description": "When a Copilot Studio machine identity is created with group-restricted publication, correlate its Entra service principal machine account and add each configured Entra group to the machine identity user entitlements.",
+  "owner": {
+    "type": "IDENTITY",
+    "id": "9f73203ecce14031b1f47e81df4a87a3",
+    "name": "olivier.detilleux"
+  },
+  "enabled": true,
+  "trigger": {
+    "type": "EVENT",
+    "mode": "advanced",
+    "attributes": {
+      "filter.$": "$[?(@.machineIdentity.datasetId == \"microsoft:copilot\" && @.machineIdentity.attributes.accesscontrolpolicy == \"2\")]",
+      "id": "idn:machine-identity-created",
+      "integrationId": null
+    }
+  },
+  "definition": {
+    "start": "Get Machine Account",
+    "steps": {
+      "End Step - Success": {
+        "actionId": "sp:operator-success",
+        "displayName": "End Step - Success",
+        "type": "success"
+      },
+      "Get Machine Account": {
+        "actionId": "sp:http",
+        "attributes": {
+          "method": "get",
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "cc1bd197-842a-4b23-964f-ce3e3eec3071",
+            "paramType": "1.4",
+            "refID": "957a8432-6d3a-405c-af15-85132a228036"
+          },
+          "param_oauth_scopes": {
+            "mapping": {
+              "auth_scopes": "scopes"
+            },
+            "paramID": "",
+            "paramType": "3.1"
+          },
+          "requestContentType": null,
+          "requestHeaders": {
+            "X-SailPoint-Experimental": "true"
+          },
+          "url": "https://company24740-poc.api.identitynow-demo.com/machine-accounts/v2",
+          "urlParams": {
+            "filters": "source.id eq \"{{$.trigger.machineIdentity.sourceId}}\"  and (name sw \"{{$.trigger.machineIdentity.attributes.entraIdentityId}}\" or nativeIdentity sw \"{{$.trigger.machineIdentity.attributes.entraIdentityId}}\")",
+            "limit": "1"
+          }
+        },
+        "description": "Find the uncorrelated Entra service principal whose native identity is the agent entraIdentityId. The Entra connector stores service principals as objectId:EXT.",
+        "displayName": "Get Machine Account",
+        "nextStep": "Link Machine Account",
+        "type": "action",
+        "versionNumber": 3
+      },
+      "Link Machine Account": {
+        "actionId": "sp:http",
+        "attributes": {
+          "jsonPatchRequestBody": [
+            {
+              "op": "add",
+              "path": "/machineIdentity",
+              "value": {
+                "id": "{{$.trigger.machineIdentity.id}}",
+                "name": "{{$.trigger.machineIdentity.name}}",
+                "subtype": "AI_AGENT",
+                "type": "MACHINE_IDENTITY"
+              }
+            }
+          ],
+          "method": "patch",
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "cc1bd197-842a-4b23-964f-ce3e3eec3071",
+            "paramType": "1.4",
+            "refID": "957a8432-6d3a-405c-af15-85132a228036"
+          },
+          "param_oauth_scopes": {
+            "mapping": {
+              "auth_scopes": "scopes"
+            },
+            "paramID": "",
+            "paramType": "3.1"
+          },
+          "requestContentType": "json-patch+json",
+          "requestHeaders": {
+            "X-SailPoint-Experimental": "true"
+          },
+          "url": "https://company24740-poc.api.identitynow-demo.com/machine-accounts/v1/{{$.getMachineAccount.body[0].id}}"
+        },
+        "catch": [
+          {
+            "next": "Map Security Groups"
+          }
+        ],
+        "description": "Attach the Copilot machine identity to the matching service principal account and mark the correlation as manual.",
+        "displayName": "Link Machine Account",
+        "nextStep": "Map Security Groups",
+        "type": "action",
+        "versionNumber": 3
+      },
+      "Map Security Groups": {
+        "actionId": "sp:serial:iterator",
+        "attributes": {
+          "input.$": "$.trigger.machineIdentity.attributes.authorizedsecuritygroupids",
+          "loopType": "forLoop",
+          "start": "Get Group Entitlement",
+          "steps": {
+            "Add User Entitlement": {
+              "actionId": "sp:http",
+              "attributes": {
+                "jsonPatchRequestBody": [
+                  {
+                    "op": "add",
+                    "path": "/userEntitlements/-",
+                    "value": {
+                      "entitlementId": "{{$.getGroupEntitlement.body[0].id}}",
+                      "sourceId": "{{$.getGroupEntitlement.body[0].source.id}}"
+                    }
+                  }
+                ],
+                "method": "patch",
+                "param_authenticationRef": "oauth",
+                "param_oauth": {
+                  "mapping": {
+                    "auth_client_id": "clientId",
+                    "auth_client_secret": "clientSecret",
+                    "auth_credential_location": "credentialLocation",
+                    "auth_token_url": "tokenURL"
+                  },
+                  "paramID": "cc1bd197-842a-4b23-964f-ce3e3eec3071",
+                  "paramType": "1.4",
+                  "refID": "957a8432-6d3a-405c-af15-85132a228036"
+                },
+                "param_oauth_scopes": {
+                  "mapping": {
+                    "auth_scopes": "scopes"
+                  },
+                  "paramID": "",
+                  "paramType": "3.1"
+                },
+                "requestContentType": "json-patch+json",
+                "requestHeaders": {
+                  "X-SailPoint-Experimental": "true"
+                },
+                "url": "https://company24740-poc.api.identitynow-demo.com/machine-identities/v2/{{$.trigger.machineIdentity.id}}"
+              },
+              "description": "Add the resolved group entitlement to the Copilot machine identity.",
+              "displayName": "Add User Entitlement",
+              "nextStep": "End Loop Iteration",
+              "type": "action",
+              "versionNumber": 3
+            },
+            "End Loop Iteration": {
+              "actionId": "sp:operator-success",
+              "displayName": "End Loop Iteration",
+              "type": "success"
+            },
+            "Entitlement Found": {
+              "actionId": "sp:compare-numbers",
+              "choiceList": [
+                {
+                  "comparator": "NumericGreaterThan",
+                  "nextStep": "Add User Entitlement",
+                  "variableA.$": "$.getGroupEntitlement.body.length()",
+                  "variableB": 0
+                }
+              ],
+              "defaultStep": "End Loop Iteration",
+              "description": "Only patch the machine identity when exactly one or more matching entitlements exist.",
+              "displayName": "Entitlement Found",
+              "type": "choice"
+            },
+            "Get Group Entitlement": {
+              "actionId": "sp:http",
+              "attributes": {
+                "method": "get",
+                "param_authenticationRef": "oauth",
+                "param_oauth": {
+                  "mapping": {
+                    "auth_client_id": "clientId",
+                    "auth_client_secret": "clientSecret",
+                    "auth_credential_location": "credentialLocation",
+                    "auth_token_url": "tokenURL"
+                  },
+                  "paramID": "cc1bd197-842a-4b23-964f-ce3e3eec3071",
+                  "paramType": "1.4",
+                  "refID": "957a8432-6d3a-405c-af15-85132a228036"
+                },
+                "requestContentType": null,
+                "url": "https://company24740-poc.api.identitynow-demo.com/entitlements/v1",
+                "urlParams": {
+                  "filters": "source.id eq \"bbc7c864783d44e5b4e0022bd85d7a11\" and type eq \"group\" and value eq \"{{$.loop.loopInput}}\"",
+                  "limit": "2"
+                }
+              },
+              "description": "Resolve the current Entra group object ID to its ISC entitlement.",
+              "displayName": "Get Group Entitlement",
+              "nextStep": "Entitlement Found",
+              "type": "action",
+              "versionNumber": 3
+            }
+          }
+        },
+        "description": "Resolve and add each publication group sequentially.",
+        "displayName": "Map Security Groups",
+        "nextStep": "End Step - Success",
+        "type": "action",
+        "versionNumber": 1
+      }
+    }
+  }
+}

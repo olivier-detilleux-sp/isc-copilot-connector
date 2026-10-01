@@ -11,8 +11,12 @@
  * caller also registers the Copilot tool schema name and resource id.
  * Handlers that the connector does not call are ignored.
  *
- * Agents receive the parent bot publication columns. Tools receive the
- * Dataverse connection reference and the account name of that connection.
+ * Agents receive the parent bot publication columns and the Entra agent
+ * identity sponsors and owners. Tools receive the Dataverse connection
+ * reference and the account name of that connection.
+ *
+ * The Dataverse host is orgApiUrl on the aggregated record. Source connector
+ * attributes are not used for that host.
  */
 
 export interface ToolCustomizerConfig {
@@ -23,7 +27,6 @@ export interface ToolCustomizerConfig {
     domainName?: string
     azureTenantId?: string
     tenantId?: string
-    dataverseUrl?: string
     environmentId?: string
 }
 
@@ -41,6 +44,7 @@ const DEFAULT_ENVIRONMENT_ID = 'Default-dce21e66-3a03-4ea3-b0c7-ffdc0729c732'
 
 const COPILOT_TOOL_RESOURCE_ID = 'microsoft:copilot-tool'
 const COPILOT_AGENT_RESOURCE_ID = 'microsoft:copilot-agent'
+const GRAPH_HOST = 'https://graph.microsoft.com'
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const POLICY_LABELS: Record<string, string> = {
@@ -60,11 +64,6 @@ export async function enrichToolAggregation(
         return input
     }
 
-    const dataverseUrl = resolveDataverseUrl(config, extracted.records)
-    if (!dataverseUrl) {
-        return finish(extracted, input)
-    }
-
     const clientId = config.clientID || config.clientId
     const clientSecret = config.clientSecret || config.client_secret
     const tenant = config.azureTenantId || config.tenantId || config.domainName
@@ -72,22 +71,43 @@ export async function enrichToolAggregation(
         return finish(extracted, input)
     }
 
-    const token = await clientCredentialsToken(fetchImpl, tenant, clientId, clientSecret, dataverseUrl)
-    if (!token) {
-        return finish(extracted, input)
-    }
-
+    const dataverseTokens = new Map<string, string | undefined>()
+    let graphToken: string | undefined
+    let graphTokenLoaded = false
     const bots = new Map<string, BotPublication | null>()
     const accounts = new Map<string, string | null>()
+    const ownerEmails = new Map<string, string[] | undefined>()
+    const userEmails = new Map<string, string | undefined>()
     let powerAppsToken: string | undefined
 
     for (const record of extracted.records) {
         const recordKind = kindOf(record)
         if (recordKind === 'agent') {
-            await applyPublication(fetchImpl, dataverseUrl, token, record, bots)
+            const dataverseUrl = dataverseUrlFor(record, extracted.records)
+            const token = dataverseUrl
+                ? await dataverseToken(fetchImpl, dataverseTokens, tenant, clientId, clientSecret, dataverseUrl)
+                : undefined
+            if (dataverseUrl && token) {
+                await applyPublication(fetchImpl, dataverseUrl, token, record, bots)
+            }
+            if (!graphTokenLoaded) {
+                graphTokenLoaded = true
+                graphToken = await clientCredentialsToken(fetchImpl, tenant, clientId, clientSecret, GRAPH_HOST)
+            }
+            if (graphToken) {
+                await applyAdditionalOwners(fetchImpl, graphToken, record, ownerEmails, userEmails)
+            }
             continue
         }
         if (recordKind === 'tool') {
+            const dataverseUrl = dataverseUrlFor(record, extracted.records)
+            if (!dataverseUrl) {
+                continue
+            }
+            const token = await dataverseToken(fetchImpl, dataverseTokens, tenant, clientId, clientSecret, dataverseUrl)
+            if (!token) {
+                continue
+            }
             powerAppsToken = await applyConnection(
                 fetchImpl,
                 config,
@@ -183,18 +203,34 @@ function parseJson(raw: string): unknown {
     }
 }
 
-function resolveDataverseUrl(config: ToolCustomizerConfig, records: AnyRecord[]): string | undefined {
-    const configured = trimUrl(config.dataverseUrl)
-    if (configured) {
-        return configured
+function dataverseUrlFor(record: AnyRecord, records: AnyRecord[]): string | undefined {
+    const onRecord = trimUrl(asString(getAttr(record, 'orgApiUrl')))
+    if (onRecord) {
+        return onRecord
     }
-    for (const record of records) {
-        const fromRecord = trimUrl(asString(getAttr(record, 'orgApiUrl')))
-        if (fromRecord) {
-            return fromRecord
+    for (const candidate of records) {
+        const fromBatch = trimUrl(asString(getAttr(candidate, 'orgApiUrl')))
+        if (fromBatch) {
+            return fromBatch
         }
     }
     return undefined
+}
+
+async function dataverseToken(
+    fetchImpl: FetchLike,
+    cache: Map<string, string | undefined>,
+    tenant: string,
+    clientId: string,
+    clientSecret: string,
+    dataverseUrl: string
+): Promise<string | undefined> {
+    if (cache.has(dataverseUrl)) {
+        return cache.get(dataverseUrl)
+    }
+    const token = await clientCredentialsToken(fetchImpl, tenant, clientId, clientSecret, dataverseUrl)
+    cache.set(dataverseUrl, token)
+    return token
 }
 
 function trimUrl(value: string | undefined): string | undefined {
@@ -278,6 +314,121 @@ async function applyPublication(
     if (publication.groups && publication.groups.length > 0) {
         setAttr(record, 'authorizedsecuritygroupids', publication.groups)
     }
+}
+
+async function applyAdditionalOwners(
+    fetchImpl: FetchLike,
+    token: string,
+    record: AnyRecord,
+    cache: Map<string, string[] | undefined>,
+    userEmails: Map<string, string | undefined>
+): Promise<void> {
+    const entraIdentityId = asString(getAttr(record, 'entraIdentityId'))
+    if (!entraIdentityId || !isGuid(entraIdentityId)) {
+        return
+    }
+    if (cache.has(entraIdentityId)) {
+        const cached = cache.get(entraIdentityId)
+        if (cached) {
+            setAttr(record, 'additionalOwners', cached)
+        }
+        return
+    }
+    const base = `${GRAPH_HOST}/v1.0/servicePrincipals/${entraIdentityId}/microsoft.graph.agentIdentity`
+    const select = '$select=id,mail,userPrincipalName'
+    const sponsors = await graphDirectoryObjects(fetchImpl, token, `${base}/sponsors?${select}`)
+    const owners = await graphDirectoryObjects(fetchImpl, token, `${base}/owners?${select}`)
+    if (!sponsors && !owners) {
+        cache.set(entraIdentityId, undefined)
+        return
+    }
+    const emails: string[] = []
+    const seen = new Set<string>()
+    for (const directoryObject of [...(sponsors || []), ...(owners || [])]) {
+        let email = emailOf(directoryObject)
+        if (!email && canResolveAsUser(directoryObject)) {
+            const objectId = asString(directoryObject.id)
+            if (objectId && isGuid(objectId)) {
+                email = await userEmail(fetchImpl, token, objectId, userEmails)
+            }
+        }
+        if (!email) {
+            continue
+        }
+        const key = email.toLowerCase()
+        if (seen.has(key)) {
+            continue
+        }
+        seen.add(key)
+        emails.push(email)
+    }
+    cache.set(entraIdentityId, emails)
+    setAttr(record, 'additionalOwners', emails)
+}
+
+async function graphDirectoryObjects(
+    fetchImpl: FetchLike,
+    token: string,
+    firstUrl: string
+): Promise<Record<string, unknown>[] | undefined> {
+    const objects: Record<string, unknown>[] = []
+    let url: string | undefined = firstUrl
+    let pages = 0
+    let sawPage = false
+    while (url && pages < 5) {
+        pages += 1
+        const page = await dataverseGet(fetchImpl, token, url)
+        if (!page) {
+            return sawPage ? objects : undefined
+        }
+        sawPage = true
+        objects.push(...odataValues(page))
+        url = nextLink(page)
+    }
+    return objects
+}
+
+function nextLink(payload: unknown): string | undefined {
+    if (!payload || typeof payload !== 'object') {
+        return undefined
+    }
+    return asString((payload as { '@odata.nextLink'?: unknown })['@odata.nextLink'])
+}
+
+async function userEmail(
+    fetchImpl: FetchLike,
+    token: string,
+    objectId: string,
+    cache: Map<string, string | undefined>
+): Promise<string | undefined> {
+    if (cache.has(objectId)) {
+        return cache.get(objectId)
+    }
+    const user = await dataverseGet(
+        fetchImpl,
+        token,
+        `${GRAPH_HOST}/v1.0/users/${objectId}?$select=mail,userPrincipalName`
+    )
+    const email = user && typeof user === 'object' ? emailOf(user as Record<string, unknown>) : undefined
+    cache.set(objectId, email)
+    return email
+}
+
+function emailOf(row: Record<string, unknown>): string | undefined {
+    const mail = asString(row.mail)
+    if (mail && mail.includes('@')) {
+        return mail
+    }
+    const userPrincipalName = asString(row.userPrincipalName)
+    if (userPrincipalName && userPrincipalName.includes('@')) {
+        return userPrincipalName
+    }
+    return undefined
+}
+
+function canResolveAsUser(row: Record<string, unknown>): boolean {
+    const type = (asString(row['@odata.type']) || '').toLowerCase()
+    return !type.includes('group') && !type.includes('serviceprincipal') && !type.includes('agentidentity')
 }
 
 function botIdFromAgent(record: AnyRecord): string | undefined {

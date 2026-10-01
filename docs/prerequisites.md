@@ -1,6 +1,6 @@
 # Prerequisites
 
-The customizer reads Copilot Studio data from one Dataverse environment. Use one Entra app registration and one Dataverse security role. It writes Entra group object ids onto the agent. It does not call Microsoft Graph.
+The customizer reads Copilot Studio data from the Dataverse environment named by `orgApiUrl` on each aggregated agent. Use one Entra app registration and one Dataverse security role. It writes Entra group object ids onto the agent, and email addresses of the agent identity's sponsors and owners.
 
 Do not grant System Administrator, Microsoft Copilot Administrator, or write access for aggregation.
 
@@ -10,6 +10,15 @@ Do not grant System Administrator, Microsoft Copilot Administrator, or write acc
 2. Create a client secret. Store it in `.env.local` only. That file is gitignored.
 3. Add the application as a Dataverse application user in the target environment. In [Power Platform admin center](https://admin.powerplatform.microsoft.com): **Manage > Environments > (environment) > Settings > Users + permissions > Application users**.
 4. `Group.Read.All` is not required for this customizer. Group display names come from entitlements the Microsoft Entra source already aggregates.
+5. Grant the Entra source application these Microsoft Graph application permissions, and give admin consent.
+
+   | Permission | Why |
+   |---|---|
+   | `AgentIdentity.Read.All` | The Entra connector aggregates agent identities (`servicePrincipalType` `ServiceIdentity`). `Application.Read.All` does not return them. The customizer lists owners with `GET /servicePrincipals/{id}/microsoft.graph.agentIdentity/owners`. |
+   | `AgentIdentity.ReadWrite.All` | Least-privileged application permission Microsoft documents for `GET /servicePrincipals/{id}/microsoft.graph.agentIdentity/sponsors`. |
+   | `User.Read.All` | Resolves `mail` or `userPrincipalName` when the owner or sponsor object does not already include an email. |
+
+   Microsoft lists agent identities with `GET /servicePrincipals/microsoft.graph.agentIdentity`. The Copilot agent attribute `entraIdentityId` is that agent identity's object id. Include `ServiceIdentity` in the source's service principal account filter, for example `servicePrincipalType in ('Application', 'Legacy', 'ServiceIdentity')`.
 
 Token scopes:
 
@@ -17,8 +26,9 @@ Token scopes:
 |---|---|
 | Dataverse | `https://{org}.api.{region}.dynamics.com/.default` |
 | Power Apps | `https://service.powerapps.com/.default` |
+| Microsoft Graph | `https://graph.microsoft.com/.default` |
 
-The same client id and secret request both tokens. `dataverseUrl` on the Identity Security Cloud source selects the Dataverse host. See the README.
+The same client id and secret request each token. `{org}` comes from `orgApiUrl` on the aggregated record. See the README.
 
 ## Dataverse security role
 
@@ -66,7 +76,21 @@ Read these columns on `bot`. Definitions: [bot table](https://learn.microsoft.co
 | `accesscontrolpolicy` | `0` Any, `1` Copilot readers, `2` Group membership, `3` Any (multi-tenant). |
 | `authorizedsecuritygroupids` | Comma-separated Entra group object ids, maximum 20. Microsoft ignores this column unless `accesscontrolpolicy` is `2`. A value may still be stored on an agent whose policy is `0`. |
 
-The customizer splits that column into one value per group object id. It does not call Microsoft Graph.
+The customizer splits that column into one value per group object id.
+
+## Entra sponsors and owners
+
+For each agent with `entraIdentityId`, the customizer reads the agent identity and writes `additionalOwners`. The attribute is already on the AZURE-AL agent schema (`09c5705b3ecd45e39515761f29d3284d`): string, multi-valued, not an entitlement. Each value is an email address: `mail` when it is present, otherwise `userPrincipalName`.
+
+Sponsors are listed first, then owners. The same address is stored once. A directory object with neither address is omitted. Object ids are not stored. If both list calls fail, the attribute is left unset. Publication fields from Dataverse are still written. Version 4 of customizer `6631cedd-b67e-4289-9688-890dbb7eb0ac` (image `cb44834a-e05c-443d-86f1-273d04780d39`) is the build that does this.
+
+```http
+GET https://graph.microsoft.com/v1.0/servicePrincipals/{entraIdentityId}/microsoft.graph.agentIdentity/sponsors?$select=id,mail,userPrincipalName
+GET https://graph.microsoft.com/v1.0/servicePrincipals/{entraIdentityId}/microsoft.graph.agentIdentity/owners?$select=id,mail,userPrincipalName
+GET https://graph.microsoft.com/v1.0/users/{id}?$select=mail,userPrincipalName
+```
+
+References: [List agentIdentity sponsors](https://learn.microsoft.com/en-us/graph/api/agentidentity-list-sponsors?view=graph-rest-1.0), [List agentIdentity owners](https://learn.microsoft.com/en-us/graph/api/agentidentity-list-owners?view=graph-rest-1.0).
 
 ## Connected account name
 
