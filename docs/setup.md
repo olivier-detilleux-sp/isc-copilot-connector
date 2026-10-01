@@ -14,31 +14,61 @@ Create a Microsoft Entra SaaS source and configure the connection the way SailPo
 
 Use the same app registration for the source and for the customizer. Client id, client secret, and domain name are read from the source configuration.
 
-## 2. Prerequisites for Copilot Studio agents
+## 2. Grant the app access to Copilot Studio and agent identities
 
-The Entra connector permissions above are not enough to read Copilot Studio agents or their Entra agent identities.
+Use the same app registration as the Entra source. Create the Dataverse role before the application user, so the user can receive it immediately.
 
-### Power Platform application user
+### Dataverse security role
 
-Add the source service principal as an application user on every Power Platform environment that hosts agents. In the [Power Platform admin center](https://admin.powerplatform.microsoft.com): **Manage > (environment) > Settings > Users + permissions > Application users > New app user**.
+In the [Power Platform admin center](https://admin.powerplatform.microsoft.com), open the environment, then **Settings > Users + permissions > Security roles**. Create a custom role on the root business unit, for example `Copilot Studio Reader`.
 
-Assign one custom Dataverse security role, for example `Copilot Studio Reader`, with Organization Read on the tables the customizer queries. The role, the privileges, and the Power Apps admin registration used to read connection account names are in [prerequisites.md](prerequisites.md).
+On **Custom Tables**, set **Read** to **Organization** for these tables. Leave every other privilege empty.
 
-SailPoint also documents a BotReader role and the Global Discovery Service Role on [Microsoft Copilot Studio Agents Management](https://documentation.sailpoint.com/connectors/saas/msentraid/help/saas_connectivity/microsoft_entra_id/copilot_studio_agents.html). Aggregation in this project does not need Write on `bot` or `botcomponent`. Write is only required if you use the connector to activate or deactivate agents.
+| Table in the role editor | Logical name | Used for |
+|---|---|---|
+| Agent | `bot` | Agents and publication (`accesscontrolpolicy`, `authorizedsecuritygroupids`) |
+| Copilot component | `botcomponent` | Tools, and the link from a tool to its connection reference |
+| Connection Reference | `connectionreference` | Connection reference name and connection id |
+| Connection Instance | `connectioninstance` | Connected account name, when the environment stores instances |
+
+Organization level is required. These rows are owned by makers. [prerequisites.md](prerequisites.md) lists the privilege names and the columns the customizer does not read.
+
+### Application user
+
+Still in that environment, go to **Settings > Users + permissions > Application users > New app user**. Add the source service principal. Assign:
+
+- the custom role you just created
+- the built-in **Global Discovery Service Role**, which the Entra connector uses to list Power Platform environments
+
+Repeat this for every environment that hosts agents you want to aggregate.
+
+### Power Platform Administrator
+
+The customizer reads `accountName` from the Power Apps admin connection list when `connectioninstance` has no row. That call needs two things:
+
+1. A Privileged Role Administrator assigns the directory role **Power Platform Administrator** to the source service principal. In the [Microsoft Entra admin center](https://entra.microsoft.com): **Identity > Roles and admins > Power Platform Administrator > Add assignments**.
+2. An administrator signed in as a user registers this existing app. The service principal cannot register itself. On Windows PowerShell 5.1:
+
+```powershell
+Install-Module Microsoft.PowerApps.Administration.PowerShell -Scope CurrentUser -Force
+Import-Module Microsoft.PowerApps.Administration.PowerShell
+Add-PowerAppsAccount -Endpoint prod -TenantID <entra-tenant-guid>
+New-PowerAppManagementApp -ApplicationId <app-id>
+```
+
+[prerequisites.md](prerequisites.md) explains why this role is tenant-wide and why `New-PowerAppManagementApp` is the command to use.
 
 ### Microsoft Graph application permissions
 
-Grant these on the source app registration and give admin consent. They are in addition to the connector permissions in the SailPoint page above.
+On the app registration, add these application permissions and grant admin consent. They sit on top of the permissions in the SailPoint Entra connector page from step 1.
 
-| Permission | Why |
+| Permission | Used for |
 |---|---|
-| `AgentIdentity.Read.All` | The connector aggregates agent identities (`servicePrincipalType` `ServiceIdentity`). `Application.Read.All` does not return them. The customizer lists owners with `GET /servicePrincipals/{id}/microsoft.graph.agentIdentity/owners`. |
-| `AgentIdentity.ReadWrite.All` | Least-privileged application permission Microsoft documents for listing sponsors. |
-| `User.Read.All` | Resolves `mail` or `userPrincipalName` when the sponsor or owner object has no email. |
+| `AgentIdentity.Read.All` | Aggregating agent identities (`servicePrincipalType` `ServiceIdentity`) and listing their owners |
+| `AgentIdentity.ReadWrite.All` | Listing sponsors. This is the application permission Microsoft documents for that read |
+| `User.Read.All` | `mail` or `userPrincipalName` when the sponsor or owner object has no email |
 
-Microsoft lists agent identities with `GET /servicePrincipals/microsoft.graph.agentIdentity`. The Copilot agent attribute `entraIdentityId` is that object id.
-
-`Group.Read.All` is not required. Group names come from entitlements the Entra source already aggregates.
+`entraIdentityId` on the Copilot agent is the agent identity object id.
 
 ## 3. Entra source settings
 

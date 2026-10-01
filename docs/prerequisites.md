@@ -1,28 +1,10 @@
-# Prerequisites
+# Prerequisite details
 
-The setup sequence is [setup.md](setup.md). This page is the Dataverse role, the Graph permissions, and the customizer read behavior.
+[setup.md](setup.md) is enough to configure a source. This page is the background: privilege names, columns the customizer skips, and how connection account names are read.
 
-The customizer reads Copilot Studio data from the Dataverse environment named by `orgApiUrl` on each aggregated agent. Use one Entra app registration and one Dataverse security role. It writes Entra group object ids onto the agent, and email addresses of the agent identity's sponsors and owners.
+The customizer reads Copilot Studio data from the Dataverse environment named by `orgApiUrl` on each aggregated agent. The same app registration is the Entra source client and the Dataverse application user.
 
-Do not grant System Administrator, Microsoft Copilot Administrator, or write access for aggregation.
-
-## Entra ID application
-
-1. Create an app registration.
-2. Create a client secret. Store it in `.env.local` only. That file is gitignored.
-3. Add the application as a Dataverse application user in the target environment. In [Power Platform admin center](https://admin.powerplatform.microsoft.com): **Manage > Environments > (environment) > Settings > Users + permissions > Application users**.
-4. `Group.Read.All` is not required for this customizer. Group display names come from entitlements the Microsoft Entra source already aggregates.
-5. Grant the Entra source application these Microsoft Graph application permissions, and give admin consent.
-
-   | Permission | Why |
-   |---|---|
-   | `AgentIdentity.Read.All` | The Entra connector aggregates agent identities (`servicePrincipalType` `ServiceIdentity`). `Application.Read.All` does not return them. The customizer lists owners with `GET /servicePrincipals/{id}/microsoft.graph.agentIdentity/owners`. |
-   | `AgentIdentity.ReadWrite.All` | Least-privileged application permission Microsoft documents for `GET /servicePrincipals/{id}/microsoft.graph.agentIdentity/sponsors`. |
-   | `User.Read.All` | Resolves `mail` or `userPrincipalName` when the owner or sponsor object does not already include an email. |
-
-   Microsoft lists agent identities with `GET /servicePrincipals/microsoft.graph.agentIdentity`. The Copilot agent attribute `entraIdentityId` is that agent identity's object id. Include `ServiceIdentity` in the source's service principal account filter, for example `servicePrincipalType in ('Application', 'Legacy', 'ServiceIdentity')`.
-
-Token scopes:
+Token scopes the customizer requests with that client:
 
 | API | Scope |
 |---|---|
@@ -30,11 +12,11 @@ Token scopes:
 | Power Apps | `https://service.powerapps.com/.default` |
 | Microsoft Graph | `https://graph.microsoft.com/.default` |
 
-The same client id and secret request each token. `{org}` comes from `orgApiUrl` on the aggregated record. See the README.
+`{org}` comes from `orgApiUrl` on the aggregated record.
 
 ## Dataverse security role
 
-Create one custom role, for example `Copilot Studio Reader`, on the root business unit. Assign only that role to the application user.
+Create `Copilot Studio Reader` before the application user, as described in [setup.md](setup.md). Assign that role, plus **Global Discovery Service Role**, when you add the application user.
 
 In the security role editor, set **Read** to **Organization** on these tables. Leave Create, Write, Delete, Append, Assign, and Share empty.
 
@@ -44,9 +26,8 @@ In the security role editor, set **Read** to **Organization** on these tables. L
 | Copilot component | `botcomponent` | Tools, knowledge, MCP servers, and the component `data` payload |
 | Connection Reference | `connectionreference` | Connector and the Power Platform connection id used by a tool |
 | Connection Instance | `connectioninstance` | Connected account name, when the environment stores instances |
-| User | `systemuser` | Agent owner name and email |
 
-Organization level is required. These rows are owned by makers. User-level Read only returns rows the application user owns.
+Organization level is required. These rows are owned by makers. User-level Read only returns rows the application user owns. The connector attribute `owner` already carries the agent owner, so this role does not include the User table.
 
 Reference for the admin center path: [Configure user security in an environment](https://learn.microsoft.com/en-us/power-platform/admin/database-security-configure). Assign the role from **Settings > Users + permissions > Application users > Edit security roles**. See [Manage application users](https://learn.microsoft.com/en-us/power-platform/admin/manage-application-users).
 
@@ -56,7 +37,6 @@ Privilege names behind those checks:
 - `prvReadbotcomponent`
 - `prvReadconnectionreference`
 - `prvReadConnectionInstance`
-- `prvReadUser`
 
 The link from a component to a connection reference is the intersect table `botcomponent_connectionreferenceset`. Reading it succeeded with Read on Copilot component. `$expand=botcomponent_connectionreference` returned an empty list in this environment, so the connector should read the intersect rows directly.
 
