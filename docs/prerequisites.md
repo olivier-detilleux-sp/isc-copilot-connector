@@ -1,5 +1,7 @@
 # Prerequisites
 
+The setup sequence is [setup.md](setup.md). This page is the Dataverse role, the Graph permissions, and the customizer read behavior.
+
 The customizer reads Copilot Studio data from the Dataverse environment named by `orgApiUrl` on each aggregated agent. Use one Entra app registration and one Dataverse security role. It writes Entra group object ids onto the agent, and email addresses of the agent identity's sponsors and owners.
 
 Do not grant System Administrator, Microsoft Copilot Administrator, or write access for aggregation.
@@ -76,7 +78,7 @@ Read these columns on `bot`. Definitions: [bot table](https://learn.microsoft.co
 | `accesscontrolpolicy` | `0` Any, `1` Copilot readers, `2` Group membership, `3` Any (multi-tenant). |
 | `authorizedsecuritygroupids` | Comma-separated Entra group object ids, maximum 20. Microsoft ignores this column unless `accesscontrolpolicy` is `2`. A value may still be stored on an agent whose policy is `0`. |
 
-The customizer splits that column into one value per group object id.
+The customizer splits that column into one value per group object id. On the AZURE-AL agent schema the attribute stays a multi-valued string. It is not an entitlement and it is not mapped to the Entra `group` schema.
 
 ## Entra sponsors and owners
 

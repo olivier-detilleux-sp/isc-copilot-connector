@@ -3,7 +3,10 @@
 `workflows/map-copilot-agent-user-entitlements.json` is exported from
 `company24740-poc`, workflow `b5a61d8a-2206-42a2-a6d3-8cfdc504c9dd`. The tenant
 is the source of truth: after editing the workflow in the UI, export it again
-into this file. The workflow is enabled.
+into this file. The workflow is enabled there. To deploy it on another tenant,
+follow [setup.md](setup.md): replace the API host, replace the hardcoded Entra
+source id in **Get Group Entitlement**, configure OAuth client credentials, then
+enable the workflow.
 
 ## Behavior
 
@@ -34,7 +37,8 @@ workflow:
 (`updateMachineAccountsInBulk`), which this tenant does not serve.
 
 The workflow then iterates over `attributes.authorizedsecuritygroupids` in a
-serial loop. For every Entra group object ID it:
+serial loop. That attribute is a multi-valued string of Entra group object
+ids, not an entitlement. For every object ID it:
 
 1. calls `GET /entitlements/v1` on source AZURE-AL
    (`bbc7c864783d44e5b4e0022bd85d7a11`), limited to the `group` entitlement
