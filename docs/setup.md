@@ -42,6 +42,10 @@ Microsoft lists agent identities with `GET /servicePrincipals/microsoft.graph.ag
 
 ## 3. Entra source settings
 
+Edit the source from VS Code. Install the **SailPoint Identity Security Cloud** extension and the **SailPoint SaaS Connectivity** extension. In the ISC extension, add the tenant. Open the Entra source from that tenant, apply the settings in this section and in Dataset Management, then save. The same tenant is reused later to deploy the customizer.
+
+You can make the same changes in the Identity Security Cloud admin UI. Saving from the extension is enough.
+
 ### Machine Identity Governance Settings
 
 On the source, open **Machine Identity Governance Settings** and select **Enable Microsoft Copilot Studio Agents**. Save. This is the switch documented in [Microsoft Copilot Studio Agents Management](https://documentation.sailpoint.com/connectors/saas/msentraid/help/saas_connectivity/microsoft_entra_id/copilot_studio_agents.html).
@@ -125,9 +129,9 @@ A tool uses `orgApiUrl` on its own record when that attribute is present, otherw
 
 ## 5. Save the source
 
-Save the source after the schema and dataset changes. A later save of the Entra configuration form can drop connector attributes that the form does not show. `environmentId` is one of those. The customizer uses it only for the Power Apps account-name fallback. When it is absent, the customizer uses the demo environment `Default-dce21e66-3a03-4ea3-b0c7-ffdc0729c732`, which is wrong for another tenant.
+Save the source in the extension after the schema and dataset changes.
 
-Set it with `updateSourceV1` (`PATCH /sources/v1/{id}`, content type `application/json-patch+json`):
+`environmentId` is not on the Entra configuration form. A later save of that form can drop it. The customizer uses it only for the Power Apps account-name fallback. When it is absent, the customizer uses the demo environment `Default-dce21e66-3a03-4ea3-b0c7-ffdc0729c732`, which is wrong for another tenant. Add it on the source in the extension, then save. The API equivalent is `updateSourceV1` (`PATCH /sources/v1/{id}`, content type `application/json-patch+json`):
 
 ```json
 [{ "op": "add", "path": "/connectorAttributes/environmentId", "value": "Default-{entra-tenant-guid}" }]
@@ -137,29 +141,42 @@ Set it with `updateSourceV1` (`PATCH /sources/v1/{id}`, content type `applicatio
 
 The customizer ignores a `dataverseUrl` connector attribute.
 
-## 6. Build and upload the customizer
+## 6. Upload the customizer
 
-Clone the repository:
+Clone the repository and install the dependencies:
 
 ```bash
 git clone https://github.com/olivier-detilleux-sp/isc-copilot-connector.git
 cd isc-copilot-connector/customizer
 npm install
-npm test
-npm run build
 ```
 
-Package the zip. `npm_package_name` and `npm_package_version` must be set, or the zip is named `undefined`.
+### VS Code extension
+
+This is the simplest upload.
+
+1. Open the `customizer` folder in VS Code.
+2. The tenant is already in the ISC extension from the source setup above. Add it now if that step was skipped.
+3. In the **SaaS Connectivity** section, click **+** and create a customizer. Give it a name.
+4. Right-click that customizer and select **Deploy**.
+
+Deploy builds the package and uploads it. Link the customizer to the Entra source from the same view if it is not already linked. The next aggregation uses the latest deployed version.
+
+### SailPoint CLI
+
+Use this when you are not deploying from the extension.
 
 ```bash
+npm test
+npm run build
 export npm_package_name=copilot-tool-resource-customizer
 export npm_package_version=0.1.0
 npx spcx package
 ```
 
-The zip is `dist/copilot-tool-resource-customizer-0.1.0.zip`.
+`npm_package_name` and `npm_package_version` must be set, or the zip is named `undefined`. The zip is `dist/copilot-tool-resource-customizer-0.1.0.zip`.
 
-Point the SailPoint CLI at the tenant with `--env`. Do not pass `--debug`. Debug logging prints the access token.
+Point the CLI at the tenant with `--env`. Do not pass `--debug`. Debug logging prints the access token.
 
 ```bash
 sail --env <env> connectors customizers create "Copilot Studio"
@@ -168,29 +185,45 @@ sail --env <env> connectors instances list
 sail --env <env> connectors customizers link -c <customizer-id> -i <connector-instance-id>
 ```
 
-`create` prints the customizer id. `instances list` shows the Entra source connector instance. Linking is required. The next aggregation uses the latest uploaded version of the linked customizer.
+`create` prints the customizer id. `instances list` shows the Entra source connector instance. Linking is required.
 
 On `company24740-poc` the linked customizer is `6631cedd-b67e-4289-9688-890dbb7eb0ac`, version 4, image `cb44834a-e05c-443d-86f1-273d04780d39`. A new tenant needs its own customizer and its own link.
 
 ## 7. Deploy the workflow
 
-`workflows/map-copilot-agent-user-entitlements.json` is an export from `company24740-poc`, where the workflow is enabled. Behavior is described in [user-entitlements-workflow.md](user-entitlements-workflow.md). On a new tenant, review the file before you enable it.
+`workflows/map-copilot-agent-user-entitlements.json` is an export from `company24740-poc`, where the workflow is enabled. Behavior is described in [user-entitlements-workflow.md](user-entitlements-workflow.md).
 
-Before you enable it on a new tenant:
+### VS Code extension
+
+Use the tenant already configured in the ISC extension:
+
+1. Open the **Workflows** section.
+2. Import or upload `workflows/map-copilot-agent-user-entitlements.json`.
+3. Open the imported workflow in the Identity Security Cloud UI.
+
+### Identity Security Cloud UI
+
+You can also import the JSON directly from the Workflows page in Identity Security Cloud. Import it as a disabled workflow.
+
+### Review and configure
+
+Review the workflow in the visual workflow editor. You do not need to edit the JSON file. Before enabling it:
 
 1. Replace every `https://company24740-poc.api.identitynow-demo.com` host with the target API host. Demo tenants use `https://{tenant}.api.identitynow-demo.com`. Other tenants use `https://{tenant}.api.identitynow.com`.
 2. In **Get Group Entitlement**, replace the hardcoded source id `bbc7c864783d44e5b4e0022bd85d7a11` with the new Entra source id. **Get Machine Account** already filters with `{{$.trigger.machineIdentity.sourceId}}`.
-3. Replace the workflow owner with an identity in the target tenant. Remove the exported workflow id when you create a new workflow.
+3. Set the workflow owner to an identity in the target tenant.
 4. Configure authentication on every HTTP Request step. The export only stores a reference to an OAuth parameter that exists in `company24740-poc`. Create **OAuth 2.0 - Client Credentials Grant** for the target tenant (token URL, client id, client secret). The credential needs `idn:entitlement:read`, `idn:mis-identity:manage`, `idn:mis-account:read`, and `idn:mis-account:manage`. The machine identity PATCH and the machine account PATCH require the ORG_ADMIN user level.
-5. Enable the workflow after those steps. Create it disabled, then enable it. `Machine Identity Created` cannot be simulated.
+5. Save, then enable the workflow. `Machine Identity Created` cannot be simulated.
 
-Create from the CLI after the file matches the target tenant:
+### SailPoint CLI
+
+The CLI is an alternative to the extension and UI:
 
 ```bash
 sail --env <env> workflow create -f workflows/map-copilot-agent-user-entitlements.json
 ```
 
-The client secret is not in the file. Finish the OAuth parameter in the UI, then enable the workflow.
+The client secret is not in the file. After creation, review and configure the workflow in the UI as described above, then enable it.
 
 ## 8. Aggregate
 
